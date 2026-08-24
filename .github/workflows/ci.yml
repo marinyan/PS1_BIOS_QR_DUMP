@@ -35,3 +35,31 @@ jobs:
             -c dumper/main.c -o dumper/build/main-host.o
           gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -Idumper \
             -c dumper/protocol.c -o dumper/build/protocol-host.o
+
+  mips-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download official MIPS GCC toolchain
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/Lameguy64/PSn00bSDK/releases/download/v0.24/gcc-mipsel-none-elf-12.3.0-linux.zip \
+            --output "$RUNNER_TEMP/mips-toolchain.zip"
+          unzip -q "$RUNNER_TEMP/mips-toolchain.zip" -d "$RUNNER_TEMP/mips-toolchain"
+          echo "$RUNNER_TEMP/mips-toolchain/bin" >> "$GITHUB_PATH"
+      - name: Build PS-X EXE
+        run: |
+          cmake -S dumper -B dumper/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/dumper/cmake/mipsel-none-elf.cmake" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build dumper/build
+          mipsel-none-elf-readelf -h -l dumper/build/ps1biosqr.elf
+          test -z "$(mipsel-none-elf-nm -u dumper/build/ps1biosqr.elf)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ps1biosqr
+          path: |
+            dumper/build/ps1biosqr.exe
+            dumper/build/ps1biosqr.elf
+            dumper/build/ps1biosqr.map
+          if-no-files-found: error

@@ -10,14 +10,22 @@ PSn00bSDK、Psy-QなどのSDKは使用しません。GPUレジスタ操作、起
 - `mipsel-none-elf-gcc` ツールチェーン
 - Python 3.10以降（ELFからPS-X EXEへの変換には標準ライブラリだけを使用）
 
-```sh
-cmake -S dumper -B dumper/build -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=dumper/cmake/mipsel-none-elf.cmake
-cmake --build dumper/build
+Windows用GCCはPSn00bSDK公式リリースの
+[`gcc-mipsel-none-elf-12.3.0-windows.zip`](https://github.com/Lameguy64/PSn00bSDK/releases/download/v0.24/gcc-mipsel-none-elf-12.3.0-windows.zip)
+を利用できます。SDKのライブラリは使用しません。展開先の `bin` を `PATH` に追加します。
+
+PowerShellでは次のようにビルドします。`C:\mipsel-none-elf` は実際の展開先へ置き換えてください。
+
+```powershell
+$env:Path = "C:\mipsel-none-elf\bin;$env:Path"
+cd dumper
+$toolchain = (Resolve-Path cmake\mipsel-none-elf.cmake).Path
+cmake -S . -B build -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
 生成物は `dumper/build/ps1biosqr.exe` です。CDイメージ化はまだ独立した工程です。
 Sonyのライセンスセクターはこのプロジェクトでは配布しません。
 
-現在はNTSC 320×240を対象にしています。実機検証前のため、GPUタイミングや起動方法は
-今後調整される可能性があります。
+現在はNTSC 320×240を対象にしています。`mipsel-none-elf-gcc 12.3.0` でのビルドは
+確認済みですが、実機検証前のためGPUタイミングや起動方法は今後調整される可能性があります。
