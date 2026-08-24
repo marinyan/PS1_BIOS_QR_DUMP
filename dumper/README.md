@@ -27,10 +27,32 @@ cmake --build build
 生成物は `dumper/build/ps1biosqr.exe` です。CDイメージ化はまだ独立した工程です。
 Sonyのライセンスセクターはこのプロジェクトでは配布しません。
 
+## BIN/CUEの生成
+
+任意のホストツールとして
+[`mkpsxiso` 2.30以降](https://github.com/Lameguy64/mkpsxiso/releases)
+を用意すると、ライセンスセクターを含まないBIN/CUEを生成できます。CMakeの構成時に
+実行ファイルを指定し、専用ターゲットをビルドします。
+
+```powershell
+$mkpsxiso = (Resolve-Path C:\mkpsxiso\mkpsxiso.exe).Path
+cmake -S . -B build -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
+  "-DMKPSXISO_EXECUTABLE=$mkpsxiso" -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target ps1biosqr_disc
+```
+
+生成物は `dumper/build/ps1biosqr.bin` と `ps1biosqr.cue` です。PCSX-ReARMedでは
+CUEから起動し、表示コードの内容が実行対象BIOSと一致するところまで確認しています。
+
+このイメージにSonyの認証データはありません。そのまま起動できるのはエミュレータ、
+modchip、swap方式、homebrewランチャーなどを利用できる環境です。無改造PS1のCD認証を
+通るイメージではありません。
+
 現在はNTSC 320×240を対象にしています。`mipsel-none-elf-gcc 12.3.0` でのビルドは
 確認済みです。RetroArchのPCSX-ReARMedでは映像出力からBIOS全体を復元できました。
 次画面のPIO転送中も現在画面が表示されることを保持時間として利用し、PCSX-ReARMedの
-ヘッドレス録画では2分19秒で512 KiBの復元が完了します。
+ヘッドレス録画では2分19秒で512 KiBの復元が完了します。生成したBIN/CUEからの起動も
+PCSX-ReARMedで確認済みです。
 Beetle PSXでは現在の直接GPU制御による画面が表示されなかったため、エミュレータ検証には
 PCSX-ReARMedを使用してください。実機検証前のためGPUタイミングや起動方法は今後調整される
 可能性があります。

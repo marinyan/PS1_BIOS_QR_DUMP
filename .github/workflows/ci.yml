@@ -21,7 +21,9 @@ jobs:
       - name: Test ELF to PS-X EXE conversion
         run: python -m unittest dumper/tests/test_elf2psx.py
       - name: Test browser protocol implementation
-        run: node receiver/test.cjs
+        run: |
+          node receiver/test.cjs
+          node receiver/camera_test.cjs
       - name: Test C and JavaScript protocol vectors
         run: |
           mkdir -p dumper/build
@@ -47,12 +49,25 @@ jobs:
             --output "$RUNNER_TEMP/mips-toolchain.zip"
           unzip -q "$RUNNER_TEMP/mips-toolchain.zip" -d "$RUNNER_TEMP/mips-toolchain"
           echo "$RUNNER_TEMP/mips-toolchain/bin" >> "$GITHUB_PATH"
-      - name: Build PS-X EXE
+      - name: Download official mkpsxiso
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/Lameguy64/mkpsxiso/releases/download/v2.30/mkpsxiso-2.30-linux.zip \
+            --output "$RUNNER_TEMP/mkpsxiso.zip"
+          echo "8e387e6db51dee3eb7cb08f4d59293a24c48f58bd541631acf9301d78015a1fc  $RUNNER_TEMP/mkpsxiso.zip" \
+            | sha256sum --check
+          unzip -q "$RUNNER_TEMP/mkpsxiso.zip" -d "$RUNNER_TEMP/mkpsxiso"
+          MKPSXISO="$(find "$RUNNER_TEMP/mkpsxiso" -type f -name mkpsxiso -print -quit)"
+          chmod +x "$MKPSXISO"
+          echo "MKPSXISO=$MKPSXISO" >> "$GITHUB_ENV"
+      - name: Build PS-X EXE and unlicensed disc image
         run: |
           cmake -S dumper -B dumper/build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/dumper/cmake/mipsel-none-elf.cmake" \
+            -DMKPSXISO_EXECUTABLE="$MKPSXISO" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build dumper/build
+          cmake --build dumper/build --target ps1biosqr_disc
           mipsel-none-elf-readelf -h -l dumper/build/ps1biosqr.elf
           test -z "$(mipsel-none-elf-nm -u dumper/build/ps1biosqr.elf)"
       - uses: actions/upload-artifact@v4
@@ -62,4 +77,6 @@ jobs:
             dumper/build/ps1biosqr.exe
             dumper/build/ps1biosqr.elf
             dumper/build/ps1biosqr.map
+            dumper/build/ps1biosqr.bin
+            dumper/build/ps1biosqr.cue
           if-no-files-found: error

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<iso_project image_name="@DISC_IMAGE@" cue_sheet="@DISC_CUE@">
+  <track type="data" cdvd_style="false">
+    <identifiers
+      system="PLAYSTATION"
+      application="PLAYSTATION"
+      volume="PS1BIOSQR"
+      volume_set="PS1BIOSQR"
+      publisher="PS1BIOSQR"
+      data_preparer="MKPSXISO"
+    />
+    <directory_tree>
+      <file name="SYSTEM.CNF" type="data" source="@DISC_SYSTEM_CNF@" />
+      <file name="PSXQR.EXE" type="data" source="@DISC_PSX_EXE@" />
+    </directory_tree>
+  </track>
+</iso_project>
