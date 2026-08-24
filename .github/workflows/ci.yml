@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test ELF to PS-X EXE conversion
+        run: python -m unittest dumper/tests/test_elf2psx.py
+      - name: Test browser protocol implementation
+        run: node receiver/test.cjs
+      - name: Test C and JavaScript protocol vectors
+        run: |
+          mkdir -p dumper/build
+          gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -Idumper \
+            dumper/protocol.c dumper/tests/protocol_test.c \
+            -o dumper/build/protocol_test
+          dumper/build/protocol_test
+      - name: Compile-check bare-metal C sources
+        run: |
+          gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -Idumper \
+            -c dumper/main.c -o dumper/build/main-host.o
+          gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -Idumper \
+            -c dumper/protocol.c -o dumper/build/protocol-host.o
