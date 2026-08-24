@@ -174,6 +174,7 @@
     setReady(true);
     updateTime();
     if (!success) {
+      instruction.textContent = "動画の終端まで解析しました。別の周回を含む動画でもう一度試せます。";
       status.textContent = `未完了: ${collector.received} / ${collector.expected || 0}`;
       const missing = collector.missing();
       details.textContent = `不足チャンク: ${missing.join(", ")}${collector.expected > missing.length ? " …" : ""}`;
@@ -184,9 +185,11 @@
       downloadUrl = URL.createObjectURL(new Blob([bios], { type: "application/octet-stream" }));
       download.href = downloadUrl;
       download.hidden = false;
+      instruction.textContent = "解析が完了しました。復元したBIOSを保存できます。";
       status.textContent = `復元成功: ${bios.length} bytes`;
       details.textContent = `全体CRC32検証済み。${sampled}フレーム解析、${rejected}フレーム棄却。`;
     } catch (error) {
+      instruction.textContent = "全チャンクは揃いましたが、最終検証に失敗しました。";
       status.textContent = `復元失敗: ${error.message}`;
     }
   }
