@@ -24,6 +24,7 @@ jobs:
         run: |
           node receiver/test.cjs
           node receiver/camera_test.cjs
+          node receiver/composite_test.cjs
       - name: Test C and JavaScript protocol vectors
         run: |
           mkdir -p dumper/build
