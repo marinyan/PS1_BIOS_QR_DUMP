@@ -51,6 +51,8 @@ static const uint16_t palette[CLUT_COLOR_COUNT] = {
 static uint32_t texture_words[TEXTURE_WORD_COUNT];
 static uint8_t matrix[PVQR_GRID_HEIGHT][PVQR_GRID_WIDTH];
 static uint8_t packet[PVQR_PACKET_SIZE];
+static uint8_t compressed_bios[BIOS_SIZE];
+static int32_t lzss_positions[PVQR_LZSS_WINDOW_SIZE];
 
 static void gpu_gp1(uint32_t value) {
     GPU_GP1 = value;
@@ -171,11 +173,29 @@ static void show_frame(int page) {
 
 int main(void) {
     const volatile uint8_t *bios = (const volatile uint8_t *)BIOS_ADDRESS;
-    const uint16_t chunk_count = (uint16_t)((BIOS_SIZE + PVQR_PAYLOAD_SIZE - 1) / PVQR_PAYLOAD_SIZE);
     const uint32_t image_crc = pvqr_crc32(bios, BIOS_SIZE);
     const uint32_t transfer_id = image_crc ^ BIOS_SIZE ^ TRANSFER_XOR;
+    const volatile uint8_t *transfer_data = bios;
+    uint32_t transfer_size = BIOS_SIZE;
+    uint8_t transfer_flags = 0;
+    size_t compressed_size;
+    uint16_t chunk_count;
     int page = 1;
     uint16_t chunk_index;
+
+    compressed_size = pvqr_lzss_encode(
+        compressed_bios,
+        sizeof(compressed_bios),
+        bios,
+        BIOS_SIZE,
+        lzss_positions
+    );
+    if (compressed_size > 0 && compressed_size < BIOS_SIZE) {
+        transfer_data = compressed_bios;
+        transfer_size = (uint32_t)compressed_size;
+        transfer_flags = PVQR_FLAG_LZSS;
+    }
+    chunk_count = (uint16_t)((transfer_size + PVQR_PAYLOAD_SIZE - 1) / PVQR_PAYLOAD_SIZE);
 
     gpu_initialize();
     gpu_clear_framebuffers();
@@ -184,18 +204,19 @@ int main(void) {
     for (;;) {
         for (chunk_index = 0; chunk_index < chunk_count; chunk_index++) {
             uint32_t offset = (uint32_t)chunk_index * PVQR_PAYLOAD_SIZE;
-            uint32_t remaining = BIOS_SIZE - offset;
+            uint32_t remaining = transfer_size - offset;
             uint16_t payload_size = (uint16_t)(remaining < PVQR_PAYLOAD_SIZE ? remaining : PVQR_PAYLOAD_SIZE);
 
             pvqr_build_packet(
                 packet,
-                bios + offset,
+                transfer_data + offset,
                 payload_size,
                 transfer_id,
                 chunk_index,
                 chunk_count,
                 BIOS_SIZE,
-                image_crc
+                image_crc,
+                transfer_flags
             );
             pvqr_packet_to_matrix(matrix, packet);
             pack_texture();

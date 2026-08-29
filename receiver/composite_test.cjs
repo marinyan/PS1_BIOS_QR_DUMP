@@ -306,9 +306,9 @@ const scenarios = [
 ];
 
 const fullTransfer = process.argv.includes("--full");
-const source = new Uint8Array(fullTransfer ? 512 * 1024 : 4096);
+const source = new Uint8Array(fullTransfer ? 512 * 1024 : 16384);
 for (let index = 0; index < source.length; index += 1) source[index] = (index * 29 + 7) & 0xFF;
-const encoded = PVQR.splitTransfer(source);
+const encoded = PVQR.splitTransfer(source, { compress: !fullTransfer });
 const results = [];
 const selectedScenarios = fullTransfer ? [scenarios[scenarios.length - 1]] : scenarios;
 

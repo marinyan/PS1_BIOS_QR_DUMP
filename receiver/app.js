@@ -162,7 +162,7 @@
     progress.max = collector.expected || 1;
     progress.value = collector.received;
     status.textContent = collector.expected
-      ? `${collector.received} / ${collector.expected} チャンク回収`
+      ? `${collector.received} / ${collector.expected} チャンク回収（${collector.compressed ? "LZSS" : "RAW"}）`
       : "有効なコードを探索中";
     details.textContent = `${sampled}フレーム解析、${rejected}フレーム棄却、動画 ${formatTime(video.currentTime)}`;
   }

@@ -5,6 +5,8 @@
 #define PVQR_TIMING_ROW 8
 #define PVQR_TIMING_COLUMN 8
 #define PVQR_WHITEN_SEED UINT32_C(0xC001D00D)
+#define PVQR_LZSS_MIN_MATCH 3
+#define PVQR_LZSS_MAX_MATCH 18
 
 static void clear_bytes(uint8_t *output, size_t length) {
     size_t index;
@@ -40,6 +42,92 @@ uint32_t pvqr_crc32(const volatile uint8_t *data, size_t length) {
     return crc ^ UINT32_C(0xFFFFFFFF);
 }
 
+static uint16_t lzss_hash(const volatile uint8_t *input) {
+    return (uint16_t)(((uint32_t)input[0] * 251u
+        + (uint32_t)input[1] * 17u
+        + input[2]) & (PVQR_LZSS_WINDOW_SIZE - 1));
+}
+
+size_t pvqr_lzss_encode(
+    uint8_t *output,
+    size_t output_capacity,
+    const volatile uint8_t *input,
+    size_t input_size,
+    int32_t positions[PVQR_LZSS_WINDOW_SIZE]
+) {
+    size_t input_offset = 0;
+    size_t output_offset = 0;
+    size_t index;
+
+    for (index = 0; index < PVQR_LZSS_WINDOW_SIZE; index++) {
+        positions[index] = -1;
+    }
+
+    while (input_offset < input_size) {
+        size_t flag_offset;
+        uint8_t flags = 0;
+        int token;
+
+        if (output_offset >= output_capacity) {
+            return 0;
+        }
+        flag_offset = output_offset++;
+
+        for (token = 0; token < 8 && input_offset < input_size; token++) {
+            size_t match_length = 0;
+            int32_t previous = -1;
+
+            if (input_offset + 2 < input_size) {
+                uint16_t hash = lzss_hash(input + input_offset);
+                previous = positions[hash];
+                positions[hash] = (int32_t)input_offset;
+                if (previous >= 0 && input_offset - (size_t)previous <= PVQR_LZSS_WINDOW_SIZE) {
+                    size_t maximum = input_size - input_offset;
+                    if (maximum > PVQR_LZSS_MAX_MATCH) {
+                        maximum = PVQR_LZSS_MAX_MATCH;
+                    }
+                    while (match_length < maximum
+                        && input[(size_t)previous + match_length] == input[input_offset + match_length]) {
+                        match_length++;
+                    }
+                }
+            }
+
+            if (match_length >= PVQR_LZSS_MIN_MATCH) {
+                size_t distance = input_offset - (size_t)previous;
+                uint16_t encoded_distance = (uint16_t)(distance - 1);
+                size_t matched_offset;
+
+                if (output_offset + 2 > output_capacity) {
+                    return 0;
+                }
+                output[output_offset++] = (uint8_t)encoded_distance;
+                output[output_offset++] = (uint8_t)(
+                    ((match_length - PVQR_LZSS_MIN_MATCH) << 4)
+                    | (encoded_distance >> 8)
+                );
+
+                for (matched_offset = 1; matched_offset < match_length; matched_offset++) {
+                    size_t position = input_offset + matched_offset;
+                    if (position + 2 < input_size) {
+                        positions[lzss_hash(input + position)] = (int32_t)position;
+                    }
+                }
+                input_offset += match_length;
+            } else {
+                if (output_offset >= output_capacity) {
+                    return 0;
+                }
+                flags |= (uint8_t)(1u << token);
+                output[output_offset++] = input[input_offset++];
+            }
+        }
+        output[flag_offset] = flags;
+    }
+
+    return output_offset;
+}
+
 static uint32_t xorshift32(uint32_t state) {
     state ^= state << 13;
     state ^= state >> 17;
@@ -64,7 +152,8 @@ void pvqr_build_packet(
     uint16_t chunk_index,
     uint16_t chunk_count,
     uint32_t total_size,
-    uint32_t image_crc32
+    uint32_t image_crc32,
+    uint8_t flags
 ) {
     uint32_t frame_crc;
     uint16_t index;
@@ -75,7 +164,7 @@ void pvqr_build_packet(
     output[2] = 'Q';
     output[3] = '1';
     output[4] = 1;
-    output[5] = 0;
+    output[5] = flags;
     write_u32le(output + 6, transfer_id);
     write_u16le(output + 10, chunk_index);
     write_u16le(output + 12, chunk_count);

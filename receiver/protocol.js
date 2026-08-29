@@ -18,6 +18,11 @@
   const PACKET_BITS = PACKET_SIZE * 8;
   const WHITEN_SEED = 0xC001D00D;
   const TRANSFER_XOR = 0x50565152;
+  const FLAG_LZSS = 0x01;
+  const KNOWN_FLAGS = FLAG_LZSS;
+  const LZSS_WINDOW_SIZE = 4096;
+  const LZSS_MIN_MATCH = 3;
+  const LZSS_MAX_MATCH = 18;
   const TIMING_ROW = 8;
   const TIMING_COLUMN = 8;
   const FINDERS = [[2, 2], [GRID_WIDTH - 7, 2], [2, GRID_HEIGHT - 7]];
@@ -76,6 +81,101 @@
     return (crc32(data) ^ data.length ^ TRANSFER_XOR) >>> 0;
   }
 
+  function lzssHash(input, offset) {
+    return (input[offset] * 251 + input[offset + 1] * 17 + input[offset + 2])
+      & (LZSS_WINDOW_SIZE - 1);
+  }
+
+  function lzssEncode(value) {
+    const input = asBytes(value);
+    const positions = new Int32Array(LZSS_WINDOW_SIZE);
+    positions.fill(-1);
+    const output = [];
+    let inputOffset = 0;
+
+    while (inputOffset < input.length) {
+      const flagOffset = output.length;
+      output.push(0);
+      let flags = 0;
+
+      for (let token = 0; token < 8 && inputOffset < input.length; token += 1) {
+        let previous = -1;
+        let matchLength = 0;
+        if (inputOffset + 2 < input.length) {
+          const hash = lzssHash(input, inputOffset);
+          previous = positions[hash];
+          positions[hash] = inputOffset;
+          if (previous >= 0 && inputOffset - previous <= LZSS_WINDOW_SIZE) {
+            const maximum = Math.min(LZSS_MAX_MATCH, input.length - inputOffset);
+            while (matchLength < maximum
+              && input[previous + matchLength] === input[inputOffset + matchLength]) {
+              matchLength += 1;
+            }
+          }
+        }
+
+        if (matchLength >= LZSS_MIN_MATCH) {
+          const encodedDistance = inputOffset - previous - 1;
+          output.push(
+            encodedDistance & 0xFF,
+            ((matchLength - LZSS_MIN_MATCH) << 4) | (encodedDistance >>> 8),
+          );
+          for (let matchedOffset = 1; matchedOffset < matchLength; matchedOffset += 1) {
+            const position = inputOffset + matchedOffset;
+            if (position + 2 < input.length) positions[lzssHash(input, position)] = position;
+          }
+          inputOffset += matchLength;
+        } else {
+          flags |= 1 << token;
+          output.push(input[inputOffset]);
+          inputOffset += 1;
+        }
+      }
+      output[flagOffset] = flags;
+    }
+    return Uint8Array.from(output);
+  }
+
+  function lzssDecode(value, outputSize) {
+    const input = asBytes(value);
+    if (!Number.isInteger(outputSize) || outputSize < 1) {
+      throw new ProtocolError("invalid LZSS output size");
+    }
+    const output = new Uint8Array(outputSize);
+    let inputOffset = 0;
+    let outputOffset = 0;
+
+    while (inputOffset < input.length && outputOffset < output.length) {
+      const flags = input[inputOffset++];
+      let tokens = 0;
+      for (let token = 0; token < 8 && outputOffset < output.length; token += 1) {
+        if (inputOffset >= input.length) break;
+        tokens += 1;
+        if (flags & (1 << token)) {
+          output[outputOffset++] = input[inputOffset++];
+        } else {
+          if (inputOffset + 1 >= input.length) throw new ProtocolError("truncated LZSS match");
+          const low = input[inputOffset++];
+          const high = input[inputOffset++];
+          const distance = (((high & 0x0F) << 8) | low) + 1;
+          const length = (high >>> 4) + LZSS_MIN_MATCH;
+          if (distance > outputOffset || outputOffset + length > output.length) {
+            throw new ProtocolError("invalid LZSS match");
+          }
+          for (let index = 0; index < length; index += 1) {
+            output[outputOffset] = output[outputOffset - distance];
+            outputOffset += 1;
+          }
+        }
+      }
+      if (tokens === 0) throw new ProtocolError("empty LZSS flag group");
+    }
+    if (inputOffset !== input.length || outputOffset !== output.length) {
+      throw new ProtocolError("LZSS size mismatch");
+    }
+    return output;
+  }
+
   function buildPacket(payloadValue, fields) {
     const payload = asBytes(payloadValue);
     if (payload.length > PAYLOAD_SIZE) throw new ProtocolError("payload is too large");
@@ -87,6 +187,7 @@
     raw.set(MAGIC, 0);
     raw[4] = VERSION;
     raw[5] = fields.flags || 0;
+    if (raw[5] & ~KNOWN_FLAGS) throw new ProtocolError("unknown transfer flags");
     const view = new DataView(raw.buffer);
     view.setUint32(6, fields.transferId >>> 0, true);
     view.setUint16(10, fields.chunkIndex, true);
@@ -111,6 +212,7 @@
       if (raw[index] !== MAGIC[index]) throw new ProtocolError("unknown frame magic");
     }
     if (raw[4] !== VERSION) throw new ProtocolError("unknown protocol version");
+    if (raw[5] & ~KNOWN_FLAGS) throw new ProtocolError("unknown transfer flags");
 
     const payloadSize = view.getUint16(22, true);
     const chunkIndex = view.getUint16(10, true);
@@ -129,22 +231,32 @@
     };
   }
 
-  function splitTransfer(value) {
+  function splitTransfer(value, options = {}) {
     const data = asBytes(value);
     if (!data.length) throw new ProtocolError("cannot transfer an empty file");
-    const chunkCount = Math.ceil(data.length / PAYLOAD_SIZE);
+    let encoded = data;
+    let flags = 0;
+    if (options.compress !== false) {
+      const compressed = lzssEncode(data);
+      if (compressed.length < data.length) {
+        encoded = compressed;
+        flags = FLAG_LZSS;
+      }
+    }
+    const chunkCount = Math.ceil(encoded.length / PAYLOAD_SIZE);
     if (chunkCount > 0xFFFF) throw new ProtocolError("input is too large");
     const imageCrc32 = crc32(data);
     const transferId = transferIdFor(data);
     const output = [];
     for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
       const start = chunkIndex * PAYLOAD_SIZE;
-      output.push(buildPacket(data.slice(start, start + PAYLOAD_SIZE), {
+      output.push(buildPacket(encoded.slice(start, start + PAYLOAD_SIZE), {
         transferId,
         chunkIndex,
         chunkCount,
         totalSize: data.length,
         imageCrc32,
+        flags,
       }));
     }
     return output;
@@ -387,9 +499,11 @@
     get expected() { return this.identity ? this.identity.chunkCount : 0; }
     get received() { return this.chunks.size; }
     get complete() { return this.expected > 0 && this.received === this.expected; }
+    get compressed() { return Boolean(this.identity && (this.identity.flags & FLAG_LZSS)); }
 
     add(packet) {
       const identity = {
+        flags: packet.flags,
         transferId: packet.transferId,
         chunkCount: packet.chunkCount,
         totalSize: packet.totalSize,
@@ -418,15 +532,18 @@
 
     assemble() {
       if (!this.complete) throw new ProtocolError("transfer is incomplete");
-      const output = new Uint8Array(this.identity.totalSize);
+      const encodedSize = [...this.chunks.values()].reduce((sum, chunk) => sum + chunk.length, 0);
+      const encoded = new Uint8Array(encodedSize);
       let offset = 0;
       for (let index = 0; index < this.expected; index += 1) {
         const chunk = this.chunks.get(index);
-        const length = Math.min(chunk.length, output.length - offset);
-        output.set(chunk.subarray(0, length), offset);
-        offset += length;
+        encoded.set(chunk, offset);
+        offset += chunk.length;
       }
-      if (offset !== output.length || crc32(output) !== this.identity.imageCrc32) {
+      const output = this.identity.flags & FLAG_LZSS
+        ? lzssDecode(encoded, this.identity.totalSize)
+        : encoded;
+      if (output.length !== this.identity.totalSize || crc32(output) !== this.identity.imageCrc32) {
         throw new ProtocolError("whole-image CRC32 mismatch");
       }
       return output;
@@ -440,9 +557,12 @@
     MODULE_SIZE,
     PACKET_SIZE,
     PAYLOAD_SIZE,
+    FLAG_LZSS,
     PALETTE_RGB,
     DATA_POSITIONS,
     crc32,
+    lzssEncode,
+    lzssDecode,
     whiten,
     buildPacket,
     parsePacket,

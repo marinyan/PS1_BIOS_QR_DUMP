@@ -89,10 +89,11 @@ function cameraFrame(matrix, options) {
   return { imageData: { width, height, data: output }, corners };
 }
 
-const source = new Uint8Array(4096);
+const source = new Uint8Array(16384);
 for (let index = 0; index < source.length; index += 1) source[index] = (index * 29 + 7) & 0xFF;
 const encoded = PVQR.splitTransfer(source);
 const testMatrix = PVQR.packetToMatrix(encoded[4]);
+const expectedTestPacket = PVQR.parsePacket(encoded[4]);
 
 const scenarios = [
   {
@@ -134,7 +135,8 @@ for (const scenario of scenarios) {
   const frame = cameraFrame(testMatrix, scenario);
   const scan = PVQR.sampleMatrix(frame.imageData, frame.corners);
   const decoded = PVQR.parsePacket(PVQR.matrixToPacket(scan.matrix));
-  assert.deepEqual(decoded.payload, source.slice(4 * PVQR.PAYLOAD_SIZE, 5 * PVQR.PAYLOAD_SIZE), scenario.name);
+  assert.equal(decoded.flags, PVQR.FLAG_LZSS, scenario.name);
+  assert.deepEqual(decoded.payload, expectedTestPacket.payload, scenario.name);
   assert.ok(scan.minimumSeparation > 35, scenario.name);
 }
 

@@ -18,7 +18,12 @@ int main(void) {
     uint8_t payload[PVQR_PAYLOAD_SIZE];
     uint8_t packet[PVQR_PACKET_SIZE];
     uint8_t matrix[PVQR_GRID_HEIGHT][PVQR_GRID_WIDTH];
+    uint8_t compression_source[512];
+    uint8_t compressed[512];
+    int32_t positions[PVQR_LZSS_WINDOW_SIZE];
+    size_t compressed_size;
     uint32_t matrix_hash = UINT32_C(2166136261);
+    uint32_t noise_state = UINT32_C(0x12345678);
     int x;
     int y;
 
@@ -33,7 +38,8 @@ int main(void) {
         7,
         42,
         UINT32_C(524288),
-        UINT32_C(0x89ABCDEF)
+        UINT32_C(0x89ABCDEF),
+        0
     );
 
     if (pvqr_crc32(packet, sizeof(packet)) != UINT32_C(0x23923D8E)
@@ -52,6 +58,39 @@ int main(void) {
     }
     if (matrix_hash != UINT32_C(0xC9A35175)) {
         fputs("matrix vector mismatch\n", stderr);
+        return 1;
+    }
+
+    for (x = 0; x < 512; x++) {
+        compression_source[x] = (uint8_t)(x & 15);
+    }
+    compressed_size = pvqr_lzss_encode(
+        compressed,
+        sizeof(compressed),
+        compression_source,
+        sizeof(compression_source),
+        positions
+    );
+    if (compressed_size != 78
+        || pvqr_crc32(compressed, compressed_size) != UINT32_C(0x1435CB12)) {
+        fputs("LZSS vector mismatch\n", stderr);
+        return 1;
+    }
+
+    for (x = 0; x < 512; x++) {
+        noise_state ^= noise_state << 13;
+        noise_state ^= noise_state >> 17;
+        noise_state ^= noise_state << 5;
+        compression_source[x] = (uint8_t)noise_state;
+    }
+    if (pvqr_lzss_encode(
+            compressed,
+            sizeof(compressed),
+            compression_source,
+            sizeof(compression_source),
+            positions
+        ) != 0) {
+        fputs("LZSS incompressible fallback mismatch\n", stderr);
         return 1;
     }
 
