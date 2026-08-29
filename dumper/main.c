@@ -8,6 +8,7 @@
 #define BIOS_ADDRESS UINT32_C(0xBFC00000)
 #define BIOS_SIZE UINT32_C(0x00080000)
 #define HOLD_VSYNCS 3
+#define LOOP_END_HOLD_VSYNCS 60
 #define TRANSFER_XOR UINT32_C(0x50565152)
 
 #define TEXTURE_X 320
@@ -47,6 +48,26 @@ static const uint16_t palette[CLUT_COLOR_COUNT] = {
     0x8000u,
     0x8000u
 };
+
+static const uint8_t digit_glyphs[10][5] = {
+    {7, 5, 5, 5, 7},
+    {2, 6, 2, 2, 7},
+    {7, 1, 7, 4, 7},
+    {7, 1, 7, 1, 7},
+    {5, 5, 7, 1, 1},
+    {7, 4, 7, 1, 7},
+    {7, 4, 7, 5, 7},
+    {7, 1, 1, 1, 1},
+    {7, 5, 7, 5, 7},
+    {7, 5, 7, 1, 7}
+};
+
+static const uint8_t glyph_d[5] = {6, 5, 5, 5, 6};
+static const uint8_t glyph_e[5] = {7, 4, 6, 4, 7};
+static const uint8_t glyph_l[5] = {4, 4, 4, 4, 7};
+static const uint8_t glyph_n[5] = {17, 25, 21, 19, 17};
+static const uint8_t glyph_o[5] = {7, 5, 5, 5, 7};
+static const uint8_t glyph_p[5] = {7, 5, 7, 4, 4};
 
 static uint32_t texture_words[TEXTURE_WORD_COUNT];
 static uint8_t matrix[PVQR_GRID_HEIGHT][PVQR_GRID_WIDTH];
@@ -98,6 +119,104 @@ static void gpu_clear_framebuffers(void) {
     gpu_gp0(UINT32_C(0x02000000));
     gpu_gp0(UINT32_C(0x00000000));
     gpu_gp0(((uint32_t)(SCREEN_HEIGHT * 2) << 16) | SCREEN_WIDTH);
+}
+
+static const uint8_t *glyph_for(char character) {
+    if (character >= '0' && character <= '9') {
+        return digit_glyphs[(unsigned int)(character - '0')];
+    }
+    switch (character) {
+        case 'D': return glyph_d;
+        case 'E': return glyph_e;
+        case 'L': return glyph_l;
+        case 'O': return glyph_o;
+        case 'P': return glyph_p;
+        default: return NULL;
+    }
+}
+
+static void fill_matrix(uint8_t color) {
+    int y;
+    int x;
+    for (y = 0; y < PVQR_GRID_HEIGHT; y++) {
+        for (x = 0; x < PVQR_GRID_WIDTH; x++) {
+            matrix[y][x] = color;
+        }
+    }
+}
+
+static void draw_glyph_pixels(
+    int left,
+    int top,
+    int scale,
+    const uint8_t *glyph,
+    int width,
+    uint8_t color
+) {
+    int row;
+    int column;
+    for (row = 0; row < 5; row++) {
+        for (column = 0; column < width; column++) {
+            int pixel_y;
+            int pixel_x;
+            if ((glyph[row] & (1u << (width - 1 - column))) == 0) {
+                continue;
+            }
+            for (pixel_y = 0; pixel_y < scale; pixel_y++) {
+                for (pixel_x = 0; pixel_x < scale; pixel_x++) {
+                    matrix[top + row * scale + pixel_y][left + column * scale + pixel_x] = color;
+                }
+            }
+        }
+    }
+}
+
+static void draw_glyph(int left, int top, int scale, char character, uint8_t color) {
+    const uint8_t *glyph = glyph_for(character);
+    if (glyph != NULL) {
+        draw_glyph_pixels(left, top, scale, glyph, 3, color);
+    }
+}
+
+static void draw_centered_text(int top, int scale, const char *text, uint8_t color) {
+    int length = 0;
+    int advance = 4 * scale;
+    int left;
+    int index;
+    while (text[length] != '\0') {
+        length++;
+    }
+    left = (PVQR_GRID_WIDTH - (length * advance - scale)) / 2;
+    for (index = 0; index < length; index++) {
+        draw_glyph(left + index * advance, top, scale, text[index], color);
+    }
+}
+
+static void build_loop_end_matrix(uint32_t loop_number) {
+    uint32_t display_number = ((loop_number - 1) % 999) + 1;
+    char digits[4];
+    int x;
+    int y;
+
+    fill_matrix(1);
+    for (x = 0; x < PVQR_GRID_WIDTH; x++) {
+        matrix[0][x] = 6;
+        matrix[PVQR_GRID_HEIGHT - 1][x] = 6;
+    }
+    for (y = 0; y < PVQR_GRID_HEIGHT; y++) {
+        matrix[y][0] = 6;
+        matrix[y][PVQR_GRID_WIDTH - 1] = 6;
+    }
+
+    digits[0] = (char)('0' + display_number / 100);
+    digits[1] = (char)('0' + (display_number / 10) % 10);
+    digits[2] = (char)('0' + display_number % 10);
+    digits[3] = '\0';
+    draw_centered_text(2, 2, "LOOP", 7);
+    draw_centered_text(13, 1, digits, 6);
+    draw_glyph(7, 19, 2, 'E', 7);
+    draw_glyph_pixels(15, 19, 2, glyph_n, 5, 7);
+    draw_glyph(27, 19, 2, 'D', 7);
 }
 
 static void pack_texture(void) {
@@ -160,13 +279,13 @@ static void gpu_draw_texture(int page) {
     gpu_gp0(((uint32_t)PVQR_GRID_HEIGHT << 8) | PVQR_GRID_WIDTH);
 }
 
-static void show_frame(int page) {
+static void show_frame(int page, int hold_vsyncs) {
     int hold;
     gpu_upload_texture();
     gpu_draw_texture(page);
     wait_vblank();
     gpu_gp1(UINT32_C(0x05000000) | ((uint32_t)(page ? SCREEN_HEIGHT : 0) << 10));
-    for (hold = 1; hold < HOLD_VSYNCS; hold++) {
+    for (hold = 1; hold < hold_vsyncs; hold++) {
         wait_vblank();
     }
 }
@@ -182,6 +301,7 @@ int main(void) {
     uint16_t chunk_count;
     int page = 1;
     uint16_t chunk_index;
+    uint32_t loop_number = 0;
 
     compressed_size = pvqr_lzss_encode(
         compressed_bios,
@@ -220,8 +340,13 @@ int main(void) {
             );
             pvqr_packet_to_matrix(matrix, packet);
             pack_texture();
-            show_frame(page);
+            show_frame(page, HOLD_VSYNCS);
             page ^= 1;
         }
+        loop_number++;
+        build_loop_end_matrix(loop_number);
+        pack_texture();
+        show_frame(page, LOOP_END_HOLD_VSYNCS);
+        page ^= 1;
     }
 }
