@@ -76,6 +76,7 @@ if(MKPSXISO_EXECUTABLE)
             ${CMAKE_CURRENT_BINARY_DIR}/disc.xml
         DEPENDS
             ps1biosqr_exe
+            ${CMAKE_CURRENT_BINARY_DIR}/ps1biosqr.exe
             ${CMAKE_CURRENT_SOURCE_DIR}/disc/system.cnf
             ${CMAKE_CURRENT_BINARY_DIR}/disc.xml
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
