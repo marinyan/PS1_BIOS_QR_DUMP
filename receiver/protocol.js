@@ -406,6 +406,150 @@
     return rgb;
   }
 
+  function finderScore(imageData, transform, origin, shiftX, shiftY) {
+    let blackSum = 0;
+    let blackSquareSum = 0;
+    let blackCount = 0;
+    let whiteSum = 0;
+    let whiteSquareSum = 0;
+    let whiteCount = 0;
+    const offsets = [-0.38, 0, 0.38];
+
+    for (let y = 0; y < 5; y += 1) {
+      for (let x = 0; x < 5; x += 1) {
+        const black = x === 0 || x === 4 || y === 0 || y === 4 || (x === 2 && y === 2);
+        for (const offsetY of offsets) {
+          for (const offsetX of offsets) {
+            const [px, py] = mapPoint(
+              transform,
+              (origin[0] + x + 0.5 + offsetX) * MODULE_SIZE,
+              (origin[1] + y + 0.5 + offsetY) * MODULE_SIZE,
+            );
+            const rgb = pixelRgb(imageData, px + shiftX, py + shiftY);
+            const luma = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114;
+            if (black) {
+              blackSum += luma;
+              blackSquareSum += luma * luma;
+              blackCount += 1;
+            } else {
+              whiteSum += luma;
+              whiteSquareSum += luma * luma;
+              whiteCount += 1;
+            }
+          }
+        }
+      }
+    }
+
+    const blackMean = blackSum / blackCount;
+    const whiteMean = whiteSum / whiteCount;
+    const contrast = whiteMean - blackMean;
+    const blackVariance = Math.max(0, blackSquareSum / blackCount - blackMean * blackMean);
+    const whiteVariance = Math.max(0, whiteSquareSum / whiteCount - whiteMean * whiteMean);
+    const noise = Math.sqrt((blackVariance + whiteVariance) / 2);
+    return { score: contrast / (noise + 8), contrast };
+  }
+
+  function findMarker(imageData, transform, origin, options) {
+    const centerX = (origin[0] + 2.5) * MODULE_SIZE;
+    const centerY = (origin[1] + 2.5) * MODULE_SIZE;
+    const predicted = mapPoint(transform, centerX, centerY);
+    const xNeighbor = mapPoint(transform, centerX + MODULE_SIZE, centerY);
+    const yNeighbor = mapPoint(transform, centerX, centerY + MODULE_SIZE);
+    const basisX = [xNeighbor[0] - predicted[0], xNeighbor[1] - predicted[1]];
+    const basisY = [yNeighbor[0] - predicted[0], yNeighbor[1] - predicted[1]];
+    const radius = options.searchRadiusCells;
+    const coarseStep = 0.25;
+    let best = { score: -Infinity, contrast: -Infinity, dx: 0, dy: 0 };
+
+    function evaluate(dx, dy) {
+      const shiftX = dx * basisX[0] + dy * basisY[0];
+      const shiftY = dx * basisX[1] + dy * basisY[1];
+      const result = finderScore(imageData, transform, origin, shiftX, shiftY);
+      if (result.score > best.score) best = { ...result, dx, dy, shiftX, shiftY };
+    }
+
+    const coarseCount = Math.ceil(radius / coarseStep);
+    for (let y = -coarseCount; y <= coarseCount; y += 1) {
+      for (let x = -coarseCount; x <= coarseCount; x += 1) {
+        const dx = x * coarseStep;
+        const dy = y * coarseStep;
+        if (Math.abs(dx) <= radius && Math.abs(dy) <= radius) evaluate(dx, dy);
+      }
+    }
+
+    const coarseBest = best;
+    const fineStep = coarseStep / 4;
+    for (let y = -4; y <= 4; y += 1) {
+      for (let x = -4; x <= 4; x += 1) {
+        const dx = coarseBest.dx + x * fineStep;
+        const dy = coarseBest.dy + y * fineStep;
+        if (Math.abs(dx) <= radius && Math.abs(dy) <= radius) evaluate(dx, dy);
+      }
+    }
+
+    if (best.contrast < options.minimumContrast || best.score < options.minimumScore) {
+      throw new ProtocolError("finder tracking failed");
+    }
+    return {
+      predicted,
+      observed: [predicted[0] + best.shiftX, predicted[1] + best.shiftY],
+      score: best.score,
+      contrast: best.contrast,
+    };
+  }
+
+  function affineTransform(source, destination) {
+    const rows = [];
+    const values = [];
+    for (let index = 0; index < 3; index += 1) {
+      const [x, y] = source[index];
+      const [u, v] = destination[index];
+      rows.push([x, y, 1, 0, 0, 0]);
+      values.push(u);
+      rows.push([0, 0, 0, x, y, 1]);
+      values.push(v);
+    }
+    return solveLinear(rows, values);
+  }
+
+  function mapAffine(transform, point) {
+    return [
+      transform[0] * point[0] + transform[1] * point[1] + transform[2],
+      transform[3] * point[0] + transform[4] * point[1] + transform[5],
+    ];
+  }
+
+  function trackCorners(imageData, suppliedCorners, suppliedOptions = {}) {
+    if (!Array.isArray(suppliedCorners) || suppliedCorners.length !== 4) {
+      throw new ProtocolError("four corners are required for tracking");
+    }
+    const options = {
+      searchRadiusCells: Math.max(0.5, Math.min(4, suppliedOptions.searchRadiusCells ?? 1.25)),
+      minimumContrast: suppliedOptions.minimumContrast ?? 35,
+      minimumScore: suppliedOptions.minimumScore ?? 1.4,
+      smoothing: Math.max(0, Math.min(1, suppliedOptions.smoothing ?? 0.75)),
+    };
+    const sourceCorners = [[0, 0], [320, 0], [320, 240], [0, 240]];
+    const transform = homography(sourceCorners, suppliedCorners);
+    const markers = FINDERS.map((origin) => findMarker(imageData, transform, origin, options));
+    const correction = affineTransform(
+      markers.map((marker) => marker.predicted),
+      markers.map((marker) => marker.observed),
+    );
+    const corrected = suppliedCorners.map((corner) => mapAffine(correction, corner));
+    const corners = suppliedCorners.map((corner, index) => [
+      corner[0] + (corrected[index][0] - corner[0]) * options.smoothing,
+      corner[1] + (corrected[index][1] - corner[1]) * options.smoothing,
+    ]);
+    return {
+      corners,
+      markers,
+      minimumContrast: Math.min(...markers.map((marker) => marker.contrast)),
+      minimumScore: Math.min(...markers.map((marker) => marker.score)),
+    };
+  }
+
   function median(values) {
     const sorted = [...values].sort((a, b) => a - b);
     const middle = Math.floor(sorted.length / 2);
@@ -569,6 +713,7 @@
     splitTransfer,
     packetToMatrix,
     matrixToPacket,
+    trackCorners,
     sampleMatrix,
     renderMatrixToRgba,
     TransferCollector,

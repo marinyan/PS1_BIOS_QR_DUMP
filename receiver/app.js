@@ -21,12 +21,15 @@
   let sourceUrl = null;
   let downloadUrl = null;
   let corners = [];
+  let trackedCorners = [];
   let choosingCorners = false;
   let decoding = false;
   let runToken = 0;
   let collector = null;
   let rejected = 0;
   let sampled = 0;
+  let trackingMisses = 0;
+  let trackingScore = 0;
 
   function formatTime(seconds) {
     if (!Number.isFinite(seconds)) return "0:00";
@@ -39,25 +42,25 @@
     time.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
   }
 
-  function drawOverlay() {
-    if (!corners.length) return;
+  function drawOverlay(overlayCorners = corners) {
+    if (!overlayCorners.length) return;
     context.save();
     context.lineWidth = Math.max(2, canvas.width / 400);
     context.strokeStyle = "#ff4d8d";
     context.fillStyle = "#ff4d8d";
     context.font = `${Math.max(16, canvas.width / 40)}px system-ui`;
     context.beginPath();
-    corners.forEach(([x, y], index) => {
+    overlayCorners.forEach(([x, y], index) => {
       if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
       context.beginPath();
       context.arc(x, y, 6, 0, Math.PI * 2);
       context.fill();
       context.fillText(String(index + 1), x + 10, y - 10);
     });
-    if (corners.length === 4) {
+    if (overlayCorners.length === 4) {
       context.beginPath();
-      context.moveTo(corners[0][0], corners[0][1]);
-      corners.slice(1).forEach(([x, y]) => context.lineTo(x, y));
+      context.moveTo(overlayCorners[0][0], overlayCorners[0][1]);
+      overlayCorners.slice(1).forEach(([x, y]) => context.lineTo(x, y));
       context.closePath();
       context.stroke();
     }
@@ -67,7 +70,7 @@
   function drawVideo() {
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    drawOverlay();
+    drawOverlay(decoding && trackedCorners.length === 4 ? trackedCorners : corners);
     return imageData;
   }
 
@@ -95,6 +98,7 @@
     sourceUrl = URL.createObjectURL(file);
     video.src = sourceUrl;
     corners = [];
+    trackedCorners = [];
     resetDownload();
     status.textContent = "動画を読み込んでいます";
     details.textContent = "";
@@ -107,6 +111,7 @@
     seek.max = String(video.duration);
     video.currentTime = 0;
     corners = [[0, 0], [canvas.width - 1, 0], [canvas.width - 1, canvas.height - 1], [0, canvas.height - 1]];
+    trackedCorners = corners.map((corner) => [...corner]);
     instruction.textContent = "コード画面へ移動し、必要なら四隅を指定してください。";
     status.textContent = "準備完了";
     updateTime();
@@ -129,6 +134,7 @@
   markCorners.addEventListener("click", () => {
     choosingCorners = true;
     corners = [];
+    trackedCorners = [];
     instruction.textContent = "左上 → 右上 → 右下 → 左下の順にクリックしてください。";
     drawVideo();
     setReady(true);
@@ -137,6 +143,7 @@
   fullFrame.addEventListener("click", () => {
     choosingCorners = false;
     corners = [[0, 0], [canvas.width - 1, 0], [canvas.width - 1, canvas.height - 1], [0, canvas.height - 1]];
+    trackedCorners = corners.map((corner) => [...corner]);
     instruction.textContent = "動画全体をコード領域として使用します。";
     drawVideo();
     setReady(true);
@@ -152,6 +159,7 @@
     corners.push(point);
     if (corners.length === 4) {
       choosingCorners = false;
+      trackedCorners = corners.map((corner) => [...corner]);
       instruction.textContent = "四隅を設定しました。解析を開始できます。";
     }
     drawVideo();
@@ -164,7 +172,10 @@
     status.textContent = collector.expected
       ? `${collector.received} / ${collector.expected} チャンク回収（${collector.compressed ? "LZSS" : "RAW"}）`
       : "有効なコードを探索中";
-    details.textContent = `${sampled}フレーム解析、${rejected}フレーム棄却、動画 ${formatTime(video.currentTime)}`;
+    const tracking = trackingScore > 0
+      ? `、追跡 ${trackingScore.toFixed(1)}${trackingMisses ? `（再捕捉中 ${trackingMisses}）` : ""}`
+      : "";
+    details.textContent = `${sampled}フレーム解析、${rejected}フレーム棄却${tracking}、動画 ${formatTime(video.currentTime)}`;
   }
 
   function finish(success) {
@@ -200,13 +211,28 @@
       if (!decoding || token !== runToken) return;
       const imageData = drawVideo();
       sampled += 1;
+      let trackingOkay = false;
       try {
-        const scan = PVQR.sampleMatrix(imageData, corners);
+        const tracked = PVQR.trackCorners(imageData, trackedCorners, {
+          searchRadiusCells: Math.min(1.25 + trackingMisses * 0.5, 4),
+        });
+        trackedCorners = tracked.corners;
+        trackingScore = tracked.minimumScore;
+        trackingMisses = 0;
+        trackingOkay = true;
+      } catch (error) {
+        if (!(error instanceof PVQR.ProtocolError)) throw error;
+        trackingMisses += 1;
+        rejected += 1;
+      }
+      try {
+        if (!trackingOkay) throw new PVQR.ProtocolError("finder tracking failed");
+        const scan = PVQR.sampleMatrix(imageData, trackedCorners);
         const packet = PVQR.parsePacket(PVQR.matrixToPacket(scan.matrix));
         collector.add(packet);
       } catch (error) {
         if (!(error instanceof PVQR.ProtocolError)) throw error;
-        rejected += 1;
+        if (trackingOkay) rejected += 1;
       }
       updateProgress();
       if (collector.complete) {
@@ -230,12 +256,15 @@
     collector = new PVQR.TransferCollector();
     rejected = 0;
     sampled = 0;
+    trackedCorners = corners.map((corner) => [...corner]);
+    trackingMisses = 0;
+    trackingScore = 0;
     decoding = true;
     runToken += 1;
     const token = runToken;
     video.playbackRate = Number(speed.value);
     setReady(true);
-    instruction.textContent = "解析中です。ブラウザを前面に置いたままにしてください。";
+    instruction.textContent = "解析中です。手ブレを自動補正します。ブラウザを前面に置いたままにしてください。";
     try {
       await video.play();
       schedule(token);

@@ -140,6 +140,83 @@ for (const scenario of scenarios) {
   assert.ok(scan.minimumSeparation > 35, scenario.name);
 }
 
+function handheldCorners(baseCorners, frameIndex) {
+  const center = [240, 180];
+  const translateX = Math.sin(frameIndex * 0.79) * 8 + Math.sin(frameIndex * 1.91) * 2.5;
+  const translateY = Math.sin(frameIndex * 0.61) * 6 + Math.sin(frameIndex * 1.47) * 2;
+  const angle = Math.sin(frameIndex * 0.43) * 1.4 * Math.PI / 180;
+  const scale = 1 + Math.sin(frameIndex * 0.37) * 0.018;
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  return baseCorners.map(([x, y]) => {
+    const dx = x - center[0];
+    const dy = y - center[1];
+    return [
+      center[0] + scale * (cosine * dx - sine * dy) + translateX,
+      center[1] + scale * (sine * dx + cosine * dy) + translateY,
+    ];
+  });
+}
+
+const handheldBase = [[46, 34], [435, 27], [448, 329], [33, 336]];
+const handheldOptions = {
+  width: 480,
+  height: 360,
+  corners: handheldBase,
+  gains: [0.76, 0.88, 1.01],
+  offsets: [17, 9, 1],
+  noise: 8,
+  quantization: 8,
+  blockNoise: 4,
+};
+const handheldCollector = new PVQR.TransferCollector();
+let trackedCorners = handheldBase.map((corner) => [...corner]);
+let handheldRejected = 0;
+let handheldTrackingRejected = 0;
+let handheldDecodeRejected = 0;
+let trackingErrorSum = 0;
+let trackedFrames = 0;
+for (let frameIndex = 0; frameIndex < encoded.length * 3; frameIndex += 1) {
+  const chunkIndex = frameIndex % encoded.length;
+  const actualCorners = handheldCorners(handheldBase, frameIndex);
+  const frame = cameraFrame(PVQR.packetToMatrix(encoded[chunkIndex]), {
+    ...handheldOptions,
+    corners: actualCorners,
+  });
+  let tracking;
+  try {
+    tracking = PVQR.trackCorners(frame.imageData, trackedCorners, {
+      searchRadiusCells: 1.25,
+    });
+    trackedCorners = tracking.corners;
+    trackingErrorSum += trackedCorners.reduce((sum, corner, index) => (
+      sum + Math.hypot(corner[0] - actualCorners[index][0], corner[1] - actualCorners[index][1])
+    ), 0) / 4;
+    trackedFrames += 1;
+  } catch (error) {
+    if (!(error instanceof PVQR.ProtocolError)) throw error;
+    handheldRejected += 1;
+    handheldTrackingRejected += 1;
+    continue;
+  }
+  try {
+    const scan = PVQR.sampleMatrix(frame.imageData, trackedCorners);
+    handheldCollector.add(PVQR.parsePacket(PVQR.matrixToPacket(scan.matrix)));
+  } catch (error) {
+    if (!(error instanceof PVQR.ProtocolError)) throw error;
+    handheldRejected += 1;
+    handheldDecodeRejected += 1;
+  }
+}
+assert.equal(
+  handheldCollector.complete,
+  true,
+  `handheld tracking recovery: ${handheldRejected} rejected, missing ${handheldCollector.missing().join(",")}`,
+);
+assert.deepEqual(handheldCollector.assemble(), source, "handheld tracking recovery");
+const averageTrackingError = trackingErrorSum / trackedFrames;
+assert.ok(averageTrackingError < 4, `handheld corner tracking error: ${averageTrackingError.toFixed(2)} px`);
+
 const collector = new PVQR.TransferCollector();
 let cameraFrameIndex = 0;
 for (let loop = 0; loop < 2; loop += 1) {
@@ -155,4 +232,4 @@ for (let loop = 0; loop < 2; loop += 1) {
 assert.equal(collector.complete, true);
 assert.deepEqual(collector.assemble(), source);
 
-console.log(`ok: ${scenarios.length} camera distortions, 30 fps sampling, loop recovery`);
+console.log(`ok: ${scenarios.length} camera distortions, handheld tracking (${handheldRejected} rejected: ${handheldTrackingRejected} tracking, ${handheldDecodeRejected} decode, ${averageTrackingError.toFixed(2)} px error), 30 fps sampling, loop recovery`);

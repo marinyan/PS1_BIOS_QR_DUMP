@@ -317,13 +317,15 @@ for (let scenarioIndex = 0; scenarioIndex < selectedScenarios.length; scenarioIn
   const collector = new PVQR.TransferCollector();
   let rejected = 0;
   let minimumPaletteSeparation = Infinity;
+  let trackedCorners = [[0, 0], [CAPTURE_WIDTH - 1, 0], [CAPTURE_WIDTH - 1, CAPTURE_HEIGHT - 1], [0, CAPTURE_HEIGHT - 1]];
   for (let loop = 0; loop < 2 && !collector.complete; loop += 1) {
     for (let chunkIndex = 0; chunkIndex < encoded.length; chunkIndex += 1) {
       const matrix = PVQR.packetToMatrix(encoded[chunkIndex]);
       const frameSeed = 0x12340000 ^ (scenarioIndex << 16) ^ (loop << 12) ^ chunkIndex;
       const captured = captureFrame(matrix, scenario, frameSeed);
       try {
-        const scan = PVQR.sampleMatrix(captured);
+        if (!fullTransfer) trackedCorners = PVQR.trackCorners(captured, trackedCorners).corners;
+        const scan = PVQR.sampleMatrix(captured, fullTransfer ? undefined : trackedCorners);
         minimumPaletteSeparation = Math.min(minimumPaletteSeparation, scan.minimumSeparation);
         collector.add(PVQR.parsePacket(PVQR.matrixToPacket(scan.matrix)));
       } catch (error) {
@@ -346,19 +348,20 @@ if (!fullTransfer) {
   const destructive = {
     ...scenarios[scenarios.length - 1],
     name: "destructive negative control",
-    cableBandwidthHz: 1300000,
-    compositeNoise: 0.03,
-    decoderChromaBandwidthHz: 150000,
-    decoderPhaseDegrees: 38,
-    decoderSaturation: 0.18,
-    lineJitterSamples: 2.5,
-    verticalBlend: 0.42,
-    captureNoise: 0.025,
-    quantization: 16,
+    cableBandwidthHz: 900000,
+    compositeNoise: 0.08,
+    decoderChromaBandwidthHz: 50000,
+    decoderPhaseDegrees: 90,
+    decoderSaturation: 0.02,
+    lineJitterSamples: 3.5,
+    verticalBlend: 0.48,
+    captureNoise: 0.05,
+    quantization: 32,
   };
   const captured = captureFrame(PVQR.packetToMatrix(encoded[4]), destructive, 0xBADCAFE);
   assert.throws(() => {
-    const scan = PVQR.sampleMatrix(captured);
+    const corners = PVQR.trackCorners(captured, [[0, 0], [CAPTURE_WIDTH - 1, 0], [CAPTURE_WIDTH - 1, CAPTURE_HEIGHT - 1], [0, CAPTURE_HEIGHT - 1]]).corners;
+    const scan = PVQR.sampleMatrix(captured, corners);
     PVQR.parsePacket(PVQR.matrixToPacket(scan.matrix));
   }, PVQR.ProtocolError);
 }

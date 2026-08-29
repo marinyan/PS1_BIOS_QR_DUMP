@@ -55,6 +55,14 @@ assert.throws(() => PVQR.parsePacket(PVQR.matrixToPacket(matrix)), PVQR.Protocol
 
 const cleanMatrix = PVQR.packetToMatrix(encoded[0]);
 const rgba = PVQR.renderMatrixToRgba(cleanMatrix);
+const tracked = PVQR.trackCorners(rgba, [[0, 0], [rgba.width - 1, 0], [rgba.width - 1, rgba.height - 1], [0, rgba.height - 1]]);
+assert.ok(tracked.minimumContrast > 200);
+const blank = {
+  width: rgba.width,
+  height: rgba.height,
+  data: new Uint8ClampedArray(rgba.width * rgba.height * 4),
+};
+assert.throws(() => PVQR.trackCorners(blank, [[0, 0], [rgba.width - 1, 0], [rgba.width - 1, rgba.height - 1], [0, rgba.height - 1]]), PVQR.ProtocolError);
 const sampled = PVQR.sampleMatrix(rgba);
 assert.ok(sampled.minimumSeparation > 200);
 equalBytes(PVQR.matrixToPacket(sampled.matrix), encoded[0]);
